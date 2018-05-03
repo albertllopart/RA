@@ -15,27 +15,15 @@
             uniform mat4 uPMatrix;
             uniform mat3 uNMatrix;
 
-            uniform vec3 uAmbientColor;
-
-            uniform vec3 uLightingDirection;
-            uniform vec3 uDirectionalColor;
-
-            uniform bool uUseLighting;
-
             varying vec2 vTextureCoord;
-            varying vec3 vLightWeighting;
+            varying vec3 vTransformedNormal;
+            varying vec4 vPosition;
 
             void main(void) {
-                gl_Position = uPMatrix * uMVMatrix * vec4(aVertexPosition, 1.0);
+                vPosition = uMVMatrix * vec4(aVertexPosition, 1.0);
+                gl_Position = uPMatrix * vPosition;
                 vTextureCoord = aTextureCoord;
-
-                if (!uUseLighting) {
-                    vLightWeighting = vec3(1.0, 1.0, 1.0);
-                } else {
-                    vec3 transformedNormal = uNMatrix * aVertexNormal;
-                    float directionalLightWeighting = max(dot(transformedNormal, uLightingDirection), 0.0);
-                    vLightWeighting = uAmbientColor + uDirectionalColor * directionalLightWeighting;
-                }
+                vTransformedNormal = uNMatrix * aVertexNormal;
             }
         </script>
         
@@ -43,13 +31,48 @@
             precision mediump float;
 
             varying vec2 vTextureCoord;
-            varying vec3 vLightWeighting;
+            varying vec3 vTransformedNormal;
+            varying vec4 vPosition;
+
+            uniform float uMaterialShininess;
+
+            uniform bool uShowSpecularHighlights;
+            uniform bool uUseLighting;
+            uniform bool uUseTextures;
+
+            uniform vec3 uAmbientColor;
+
+            uniform vec3 uPointLightingLocation;
+            uniform vec3 uPointLightingSpecularColor;
+            uniform vec3 uPointLightingDiffuseColor;
 
             uniform sampler2D uSampler;
 
             void main(void) {
-                vec4 textureColor = texture2D(uSampler, vec2(vTextureCoord.s, vTextureCoord.t));
-                gl_FragColor = vec4(textureColor.rgb * vLightWeighting, textureColor.a);
+                vec3 lightWeighting;
+                if (!uUseLighting) {
+                    lightWeighting = vec3(1.0, 1.0, 1.0);
+                } else {
+                    vec3 lightDirection = normalize(uPointLightingLocation - vPosition.xyz);
+                    vec3 normal = normalize(vTransformedNormal);
+                    float specularLightWeighting = 0.0;
+                    if (uShowSpecularHighlights) {
+                        vec3 eyeDirection = normalize(-vPosition.xyz);
+                        vec3 reflectionDirection = reflect(-lightDirection, normal);
+                        specularLightWeighting = pow(max(dot(reflectionDirection, eyeDirection), 0.0), uMaterialShininess);
+                    }
+                    float diffuseLightWeighting = max(dot(normal, lightDirection), 0.0);
+                    lightWeighting = uAmbientColor
+                        + uPointLightingSpecularColor * specularLightWeighting
+                        + uPointLightingDiffuseColor * diffuseLightWeighting;
+                }
+                vec4 fragmentColor;
+                if (uUseTextures) {
+                    fragmentColor = texture2D(uSampler, vec2(vTextureCoord.s, vTextureCoord.t));
+                } else {
+                    fragmentColor = vec4(1.0, 1.0, 1.0, 1.0);
+                }
+                gl_FragColor = vec4(fragmentColor.rgb * lightWeighting, fragmentColor.a);
             }
         </script>
         
@@ -134,10 +157,14 @@
                 shaderProgram.mvMatrixUniform = gl.getUniformLocation(shaderProgram, "uMVMatrix");
                 shaderProgram.nMatrixUniform = gl.getUniformLocation(shaderProgram, "uNMatrix");
                 shaderProgram.samplerUniform = gl.getUniformLocation(shaderProgram, "uSampler");
+                shaderProgram.materialShininessUniform = gl.getUniformLocation(shaderProgram, "uMaterialShininess");
+                shaderProgram.showSpecularHighlightsUniform = gl.getUniformLocation(shaderProgram, "uShowSpecularHighlights");
+                shaderProgram.useTexturesUniform = gl.getUniformLocation(shaderProgram, "uUseTextures");
                 shaderProgram.useLightingUniform = gl.getUniformLocation(shaderProgram, "uUseLighting");
                 shaderProgram.ambientColorUniform = gl.getUniformLocation(shaderProgram, "uAmbientColor");
-                shaderProgram.lightingDirectionUniform = gl.getUniformLocation(shaderProgram, "uLightingDirection");
-                shaderProgram.directionalColorUniform = gl.getUniformLocation(shaderProgram, "uDirectionalColor");
+                shaderProgram.pointLightingLocationUniform = gl.getUniformLocation(shaderProgram, "uPointLightingLocation");
+                shaderProgram.pointLightingSpecularColorUniform = gl.getUniformLocation(shaderProgram, "uPointLightingSpecularColor");
+                shaderProgram.pointLightingDiffuseColorUniform = gl.getUniformLocation(shaderProgram, "uPointLightingDiffuseColor");
             }
 
 
@@ -176,10 +203,51 @@
                 gl.uniformMatrix3fv(shaderProgram.nMatrixUniform, false, normalMatrix);
             }
 
-            var cubeVertexPositionBuffer;
-            var cubeVertexTextureCoordBuffer;
-            var cubeVertexIndexBuffer;
-            var cubeVertexNormalBuffer;//llum
+            var teapotVertexPositionBuffer;
+            var teapotVertexTextureCoordBuffer;
+            var teapotVertexIndexBuffer;
+            var teapotVertexNormalBuffer;//llum
+
+            function handleLoadedTeapot(teapotData) {
+                teapotVertexNormalBuffer = gl.createBuffer();
+                gl.bindBuffer(gl.ARRAY_BUFFER, teapotVertexNormalBuffer);
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(teapotData.vertexNormals), gl.STATIC_DRAW);
+                teapotVertexNormalBuffer.itemSize = 3;
+                teapotVertexNormalBuffer.numItems = teapotData.vertexNormals.length / 3;
+
+                teapotVertexTextureCoordBuffer = gl.createBuffer();
+                gl.bindBuffer(gl.ARRAY_BUFFER, teapotVertexTextureCoordBuffer);
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(teapotData.vertexTextureCoords), gl.STATIC_DRAW);
+                teapotVertexTextureCoordBuffer.itemSize = 2;
+                teapotVertexTextureCoordBuffer.numItems = teapotData.vertexTextureCoords.length / 2;
+
+                teapotVertexPositionBuffer = gl.createBuffer();
+                gl.bindBuffer(gl.ARRAY_BUFFER, teapotVertexPositionBuffer);
+                gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(teapotData.vertexPositions), gl.STATIC_DRAW);
+                teapotVertexPositionBuffer.itemSize = 3;
+                teapotVertexPositionBuffer.numItems = teapotData.vertexPositions.length / 3;
+
+                teapotVertexIndexBuffer = gl.createBuffer();
+                gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, teapotVertexIndexBuffer);
+                gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(teapotData.indices), gl.STATIC_DRAW);
+                teapotVertexIndexBuffer.itemSize = 1;
+                teapotVertexIndexBuffer.numItems = teapotData.indices.length;
+                document.getElementById("loadingtext").textContent = "";
+            }
+
+            function loadTeapot()
+            {
+                var request = new XMLHttpRequest();
+                request.open("GET", "Teapot.json");
+                request.onreadystatechange = function () {
+                    if (request.readyState == 4) {
+                        handleLoadedTeapot(JSON.parse(request.responseText));
+                    }
+                }
+                request.send();
+            }
+
+            var teapotAngle = 180;
             
             function loadSceneOnGPU() {
 
@@ -331,6 +399,7 @@
             }
 
             var myTexture;
+            var woodTexture;
 
             function initTexture()
             {
@@ -339,7 +408,14 @@
                 myTexture.image.onload = function () {
                     handleLoadedTexture(myTexture)
                 }
-                myTexture.image.src = "TEST.png";
+                myTexture.image.src = "TEST.jpg";
+
+                woodTexture = gl.createTexture();
+                woodTexture.image = new Image();
+                woodTexture.image.onload = function () {
+                    handleLoadedTexture(woodTexture)
+                }
+                woodTexture.image.src = "wood.png";
             }
 
             function handleLoadedTexture(texture)
@@ -361,39 +437,20 @@
 
             var z = -5.0;
 
-            var filter = 0;
-
             var currentlyPressedKeys = {};
 
             function drawScene() {
                 gl.viewport(0, 0, gl.viewportWidth, gl.viewportHeight);
                 gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-
+                if (teapotVertexPositionBuffer == null || teapotVertexNormalBuffer == null || teapotVertexTextureCoordBuffer == null || teapotVertexIndexBuffer == null) {
+                    return;
+                }
                 mat4.perspective(45, gl.viewportWidth / gl.viewportHeight, 0.1, 100.0, pMatrix);
-
-                mat4.identity(mvMatrix);
-
-                //square
-                mat4.translate(mvMatrix, [0.0, 0.0, z]);
-
-                mat4.rotate(mvMatrix, degToRad(xRot), [1, 0, 0]);
-                mat4.rotate(mvMatrix, degToRad(yRot), [0, 1, 0]);
-
-                gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertexPositionBuffer);
-                gl.vertexAttribPointer(shaderProgram.vertexPositionAttribute, cubeVertexPositionBuffer.itemSize, gl.FLOAT, false, 0, 0);
-
-                gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertexNormalBuffer);
-                gl.vertexAttribPointer(shaderProgram.vertexNormalAttribute, cubeVertexNormalBuffer.itemSize, gl.FLOAT, false, 0, 0);
-
-                gl.bindBuffer(gl.ARRAY_BUFFER, cubeVertexTextureCoordBuffer);
-                gl.vertexAttribPointer(shaderProgram.textureCoordAttribute, cubeVertexTextureCoordBuffer.itemSize, gl.FLOAT, false, 0, 0);
-
-                gl.activeTexture(gl.TEXTURE0);
-                gl.bindTexture(gl.TEXTURE_2D, myTexture);
-                gl.uniform1i(shaderProgram.samplerUniform, 0);
-
+                var specularHighlights = document.getElementById("specular").checked;
+                gl.uniform1i(shaderProgram.showSpecularHighlightsUniform, specularHighlights);
                 var lighting = document.getElementById("lighting").checked;
                 gl.uniform1i(shaderProgram.useLightingUniform, lighting);
+
                 if (lighting) {
                     gl.uniform3f(
                         shaderProgram.ambientColorUniform,
@@ -401,26 +458,54 @@
                         parseFloat(document.getElementById("ambientG").value),
                         parseFloat(document.getElementById("ambientB").value)
                     );
-                    var lightingDirection = [
-                        parseFloat(document.getElementById("lightDirectionX").value),
-                        parseFloat(document.getElementById("lightDirectionY").value),
-                        parseFloat(document.getElementById("lightDirectionZ").value)
-                    ];
-                    var adjustedLD = vec3.create();
-                    vec3.normalize(lightingDirection, adjustedLD);
-                    vec3.scale(adjustedLD, -1);
-                    gl.uniform3fv(shaderProgram.lightingDirectionUniform, adjustedLD);
                     gl.uniform3f(
-                    shaderProgram.directionalColorUniform,
-                    parseFloat(document.getElementById("directionalR").value),
-                    parseFloat(document.getElementById("directionalG").value),
-                    parseFloat(document.getElementById("directionalB").value)
+                        shaderProgram.pointLightingLocationUniform,
+                        parseFloat(document.getElementById("lightPositionX").value),
+                        parseFloat(document.getElementById("lightPositionY").value),
+                        parseFloat(document.getElementById("lightPositionZ").value)
+                    );
+                    gl.uniform3f(
+                        shaderProgram.pointLightingSpecularColorUniform,
+                        parseFloat(document.getElementById("specularR").value),
+                        parseFloat(document.getElementById("specularG").value),
+                        parseFloat(document.getElementById("specularB").value)
+                    );
+                    gl.uniform3f(
+                        shaderProgram.pointLightingDiffuseColorUniform,
+                        parseFloat(document.getElementById("diffuseR").value),
+                        parseFloat(document.getElementById("diffuseG").value),
+                        parseFloat(document.getElementById("diffuseB").value)
                     );
                 }
 
-                gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, cubeVertexIndexBuffer);
+                /*var texture = document.getElementById("texture").value;
+                gl.uniform1i(shaderProgram.useTexturesUniform, texture != "none");*/
+                mat4.identity(mvMatrix);
+                mat4.translate(mvMatrix, [0, 0, -80]);
+                //mat4.rotate(mvMatrix, degToRad(23.4), [1, 0, -1]);
+                mat4.rotate(mvMatrix, degToRad(teapotAngle), [0, 1, 0]);
+                /*gl.activeTexture(gl.TEXTURE0);
+                if (texture == "earth") {
+                    gl.bindTexture(gl.TEXTURE_2D, woodTexture);
+                } else if (texture == "galvanized") {
+                    gl.bindTexture(gl.TEXTURE_2D, myTexture);
+                }*/
+                gl.uniform1i(shaderProgram.samplerUniform, 0);
+
+                gl.uniform1f(shaderProgram.materialShininessUniform, parseFloat(document.getElementById("shininess").value));
+
+                gl.bindBuffer(gl.ARRAY_BUFFER, teapotVertexPositionBuffer);
+                gl.vertexAttribPointer(shaderProgram.vertexPositionAttribute, teapotVertexPositionBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+                gl.bindBuffer(gl.ARRAY_BUFFER, teapotVertexTextureCoordBuffer);
+                gl.vertexAttribPointer(shaderProgram.textureCoordAttribute, teapotVertexTextureCoordBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+                gl.bindBuffer(gl.ARRAY_BUFFER, teapotVertexNormalBuffer);
+                gl.vertexAttribPointer(shaderProgram.vertexNormalAttribute, teapotVertexNormalBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+                gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, teapotVertexIndexBuffer);
                 sendMatricesToShader();
-                gl.drawElements(gl.TRIANGLES, cubeVertexIndexBuffer.numItems, gl.UNSIGNED_SHORT, 0);
+                gl.drawElements(gl.TRIANGLES, teapotVertexIndexBuffer.numItems, gl.UNSIGNED_SHORT, 0);
 
             }
 
@@ -440,8 +525,7 @@
                 {
                     var elapsed = timeNow - lastTime;
 
-                    xRot += (xSpeed * elapsed) / 1000.0;
-                    yRot += (ySpeed * elapsed) / 1000.0;
+                    teapotAngle += 0.05 * elapsed;
                 }
                 lastTime = timeNow;
             }
@@ -496,8 +580,8 @@
 
                 initGL(canvas);
                 initShaders();
-                loadSceneOnGPU();
                 initTexture();
+                loadTeapot();
 
                 gl.clearColor(0.0, 0.0, 0.0, 1.0);
                 gl.enable(gl.DEPTH_TEST);
@@ -515,39 +599,65 @@
     <body onload="webGLStart();" onresize="webGLStart();">
         <canvas id="webGL-canvas" style="border: none; width:100%; height:100%; margin: 0 auto;"></canvas>  
         
+        <div id="loadingtext">Loading world...</div>
         <br />
-    <input type="checkbox" id="lighting" checked /> Use lighting<br/>
-    (Use cursor keys to spin the box and <code>Page Up</code>/<code>Page Down</code> to zoom out/in)
-
-    <br/>
-    <h2>Directional light:</h2>
-
-    <table style="border: 0; padding: 10px;">
-        <tr>
-            <td><b>Direction:</b>
-            <td>X: <input type="text" id="lightDirectionX" value="-0.25" />
-            <td>Y: <input type="text" id="lightDirectionY" value="-0.25" />
-            <td>Z: <input type="text" id="lightDirectionZ" value="-1.0" />
-        </tr>
-        <tr>
-            <td><b>Colour:</b>
-            <td>R: <input type="text" id="directionalR" value="0.8" />
-            <td>G: <input type="text" id="directionalG" value="0.8" />
-            <td>B: <input type="text" id="directionalB" value="0.8" />
-        </tr>
-    </table>
-
-    <h2>Ambient light:</h2>
-    <table style="border: 0; padding: 10px;">
-        <tr>
-            <td><b>Colour:</b>
-            <td>R: <input type="text" id="ambientR" value="0.2" />
-            <td>G: <input type="text" id="ambientG" value="0.2" />
-            <td>B: <input type="text" id="ambientB" value="0.2" />
-        </tr>
-    </table>
-
-    <a href="http://learningwebgl.com/blog/?p=684">&lt;&lt; Back to Lesson 7</a>
+        <input type="checkbox" id="specular" checked /> Show specular highlight<br/>
+        <input type="checkbox" id="lighting" checked /> Use lighting<br/>
+    
+        Texture:
+        <select id="texture">
+            <option value="none">None</option>
+            <option selected value="galvanized">Galvanized</option>
+            <option value="earth">Earth</option>
+        </select>
+        <br/>
+    
+    
+        <h2>Material:</h2>
+    
+        <table style="border: 0; padding: 10px;">
+            <tr>
+                <td><b>Shininess:</b>
+                <td><input type="text" id="shininess" value="32.0" />
+            </tr>
+        </table>
+    
+    
+        <h2>Point light:</h2>
+    
+        <table style="border: 0; padding: 10px;">
+            <tr>
+                <td><b>Location:</b>
+                <td>X: <input type="text" id="lightPositionX" value="-10.0" />
+                <td>Y: <input type="text" id="lightPositionY" value="4.0" />
+                <td>Z: <input type="text" id="lightPositionZ" value="-20.0" />
+            </tr>
+            <tr>
+                <td><b>Specular colour:</b>
+                <td>R: <input type="text" id="specularR" value="0.8" />
+                <td>G: <input type="text" id="specularG" value="0.8" />
+                <td>B: <input type="text" id="specularB" value="0.8" />
+            </tr>
+            <tr>
+                <td><b>Diffuse colour:</b>
+                <td>R: <input type="text" id="diffuseR" value="0.8" />
+                <td>G: <input type="text" id="diffuseG" value="0.8" />
+                <td>B: <input type="text" id="diffuseB" value="0.8" />
+            </tr>
+        </table>
+    
+    
+        <h2>Ambient light:</h2>
+    
+        <table style="border: 0; padding: 10px;">
+            <tr>
+                <td><b>Colour:</b>
+                <td>R: <input type="text" id="ambientR" value="0.2" />
+                <td>G: <input type="text" id="ambientG" value="0.2" />
+                <td>B: <input type="text" id="ambientB" value="0.2" />
+            </tr>
+        </table>
+        <br/>
     </body>
 
 </html>
